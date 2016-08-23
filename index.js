@@ -7,7 +7,6 @@ const selectn    = require('selectn');
 const asg = new aws.AutoScaling();
 const ecs = new aws.ECS();
 const elb = new aws.ELB();
-const ec2 = new aws.EC2();
 
 // instances
 let instancesOld = [];
@@ -37,7 +36,6 @@ exports.handler = ( event, context, callback ) => {
     getContainerInstanceDetails,
     getServiceArns,
     getServiceDetails,
-    waitForInstances,
     deregisterInstances,
     waitForServices,
     waitForELBs
@@ -112,14 +110,6 @@ const getServiceDetails = (s3Event, callback) => {
     });
 
     callback(null, s3Event);
-  });
-}
-
-const waitForInstances = (s3Event, callback) => {
-  ec2.waitFor('instanceRunning', { InstanceIds: instancesNew }, function(err, data){
-    if (err) callback(err);
-
-    callback(null, s3Event);;
   });
 }
 
