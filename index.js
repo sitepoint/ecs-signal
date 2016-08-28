@@ -1,3 +1,5 @@
+'use strict';
+
 const response   = require('./lib/cfn-response');
 const async      = require('async');
 const aws        = require('aws-sdk');
@@ -18,23 +20,19 @@ let ecsServiceArns = [];
 let ecsServiceDefinitions = [];
 
 exports.handler = ( event, context, callback ) => {
-  console.log('REQUEST RECEIVED:\\n', JSON.stringify(event));
+  console.log('REQUEST RECEIVED:', JSON.stringify(event));
 
-  // resource creation or deletion is totally fine and doesn't need to be
-  // dealt with
-  if (event.RequestType == 'Delete' || event.RequestType == 'Create') {
-    response.send(event, context, response.SUCCESS);
-    return;
-  }
-
-  const s3Event = parseEvent(event);
+  const cfnEvent = parseEvent(event);
 
   async.waterfall([
-    function(callback) { callback(null, s3Event) },
+    (cb) => cb(null, event, cfnEvent),
+    testForEvent,
+    testForOldASG,
+    getServiceArns,
+    testForServiceArns,
     getASGInstances,
     getContainerInstances,
     getContainerInstanceDetails,
-    getServiceArns,
     getServiceDetails,
     deregisterInstances,
     waitForServices,
@@ -42,63 +40,107 @@ exports.handler = ( event, context, callback ) => {
   ], function(err, result) {
     if (err) {
       console.log(err);
-      response.send(event, context, response.FAILURE);
+      if (err == 'ok') {
+        response.send(event, context, response.SUCCESS);
+        return callback();
+      } else {
+        response.send(event, context, response.FAILURE);
+        return callback(err);
+      }
     }
     response.send(event, context, response.SUCCESS);
+    return callback();
   });
+
+}
+
+const testForEvent = (event, cfnEvent, cb) => {
+  // resource creation or deletion is totally fine and doesn't need to be
+  // dealt with
+  if (event.RequestType == 'Delete' || event.RequestType == 'Create') {
+    console.log(`Don't care about ${event.RequestType} events`);
+    return cb('ok');
+  }
+  cb(null, cfnEvent);
+}
+
+const testForOldASG = (cfnEvent, cb) => {
+  console.log('CALLING testForOldASG');
+  if (cfnEvent.asgOld === undefined) {
+    return cb('ok');
+  }
+  cb(null, cfnEvent);
+}
+
+const testForServiceArns = (cfnEvent, cb) => {
+  console.log('CALLING testForServiceArns');
+  if (ecsServiceArns.length == 0) {
+    return cb('ok');
+  }
+  cb(null, cfnEvent);
 };
 
-const getASGInstances = (s3Event, callback) => {
-  asg.describeAutoScalingGroups({ AutoScalingGroupNames: [ s3Event.asgNew, s3Event.asgOld ]}, function(err, data) {
-    if (err) callback(err);
+const getServiceArns = (cfnEvent, cb) => {
+  console.log('CALLING getServiceArns');
+  ecs.listServices({ cluster: cfnEvent.cluster }, function(err, data) {
+    if (err) return cb(err);
+
+    ecsServiceArns = data.serviceArns;
+
+    console.log(ecsServiceArns);
+    cb(null, cfnEvent);
+  });
+}
+
+const getASGInstances = (cfnEvent, cb) => {
+  console.log('CALLING getASGInstances');
+  asg.describeAutoScalingGroups({ AutoScalingGroupNames: [ cfnEvent.asgNew, cfnEvent.asgOld ]}, function(err, data) {
+    if (err) return cb(err);
 
     data.AutoScalingGroups.map(function(ASGInfo){
-      if (ASGInfo.AutoScalingGroupName == s3Event.asgOld) {
+      if (ASGInfo.AutoScalingGroupName == cfnEvent.asgOld) {
         instancesOld = ASGInfo.Instances.map(selectn('InstanceId'));
       } else {
         instancesNew = ASGInfo.Instances.map(selectn('InstanceId'));
       }
     });
 
-    callback(null, s3Event);
+    console.log(instancesOld);
+    console.log(instancesNew);
+    cb(null, cfnEvent);
   });
 }
 
-const getContainerInstances = (s3Event, callback) => {
-  ecs.listContainerInstances({ cluster: s3Event.cluster}, function(err, data) {
-    if (err) callback(err);
+const getContainerInstances = (cfnEvent, cb) => {
+  console.log('CALLING getContainerInstances');
+  ecs.listContainerInstances({ cluster: cfnEvent.cluster}, function(err, data) {
+    if (err) return cb(err);
 
     instancesECS = data.containerInstanceArns;
 
-    callback(null, s3Event);
+    console.log(instancesECS);
+    cb(null, cfnEvent);
   });
 }
 
-const getContainerInstanceDetails = (s3Event, callback) => {
-  ecs.describeContainerInstances({containerInstances: instancesECS, cluster: s3Event.cluster}, function(err, data){
-    if (err) callback(err);
+const getContainerInstanceDetails = (cfnEvent, cb) => {
+  console.log('CALLING getContainerInstanceDetails');
+  ecs.describeContainerInstances({containerInstances: instancesECS, cluster: cfnEvent.cluster}, function(err, data){
+    if (err) return cb(err);
 
     data.containerInstances.map(function(instance) {
       instanceMap[instance.ec2InstanceId] = instance.containerInstanceArn;
     });
 
-    callback(null, s3Event);
+    console.log(instanceMap);
+    cb(null, cfnEvent);
   });
 }
 
-const getServiceArns = (s3Event, callback) => {
-  ecs.listServices({ cluster: s3Event.cluster }, function(err, data) {
-    if (err) callback(err);
-
-    ecsServiceArns = data.serviceArns;
-
-    callback(null, s3Event);
-  });
-}
-
-const getServiceDetails = (s3Event, callback) => {
-  ecs.describeServices({ services: ecsServiceArns, cluster: s3Event.cluster }, function(err, data) {
-    if (err) callback(err);
+const getServiceDetails = (cfnEvent, cb) => {
+  console.log('CALLING getServiceDetails');
+  ecs.describeServices({ services: ecsServiceArns, cluster: cfnEvent.cluster }, function(err, data) {
+    if (err) return cb(err);
 
     data.services.map(function(service) {
       ecsServiceDefinitions.push({
@@ -109,51 +151,70 @@ const getServiceDetails = (s3Event, callback) => {
       });
     });
 
-    callback(null, s3Event);
+    console.log(ecsServiceDefinitions);
+    cb(null, cfnEvent);
   });
 }
 
-const deregisterInstances = (s3Event, callback) => {
+const deregisterInstances = (cfnEvent, cb) => {
+  console.log('CALLING deregisterInstances');
   mapInstanceNames(instancesOld).map(function(instanceId){
-    forceDeregisterInstance(instanceId);
+    forceDeregisterInstance(instanceId, cfnEvent, cb);
   });
-  callback(null, s3Event);
+  cb(null, cfnEvent);
 }
 
-const forceDeregisterInstance = (instanceId, callback) => {
-  ecs.deregisterContainerInstance({containerInstance: instanceId, cluster: s3Event.cluster, force: true }, function(err, data) {
-    if (err) callback(err);
-
-    callback(null, s3Event);
-  });
-}
-
-const waitForServices = (s3Event, callback) => {
-  ecs.waitFor('servicesStable', {services: ecsServiceArns, cluster: s3Event.cluster}, function(err, data){
-    if (err) callback(err);
-
-    callback(null, s3Event);
+const forceDeregisterInstance = (instanceId, cfnEvent, cb) => {
+  console.log(`CALLING forceDeregisterInstance with ${instanceId}`);
+  ecs.deregisterContainerInstance({containerInstance: instanceId, cluster: cfnEvent.cluster, force: true }, function(err, data) {
+    if (err) return cb(err);
   });
 }
 
-const waitForELBs = (s3Event, callback) => {
+const waitForServices = (cfnEvent, cb) => {
+  console.log('CALLING waitForServices');
+  ecs.waitFor('servicesStable', {services: ecsServiceArns, cluster: cfnEvent.cluster}, function(err, data){
+    if (err) return cb(err);
+
+    cb(null, cfnEvent);
+  });
+}
+
+const waitForELBs = (cfnEvent, cb) => {
+  console.log('CALLING waitForELBs');
   let elbNames = ecsServiceDefinitions.map(service => service.loadBalancers).reduce((a,b) => a.concat(b));
 
-  elbNames.map(function(elb) {
-    async.retry({ times: 25, interval: 10 }, checkLoadBalancer(elb), function(err, result) {
-      if (err) callback(err);
-    });
-  });
-
-  callback(null, s3Event);
+  async.map(elbNames,
+    function(elb, callback) {
+      async.retry({ times: 25, interval: 10000 },
+        function(done, results) {
+          if (checkLoadBalancer(elb)) {
+            done(null);
+          } else {
+            done('not yet');
+          }
+        },
+        function(err, result) {
+          if (err) return callback(err);
+          console.log(elbNames);
+          callback(null);
+        }
+      )
+    },
+    function (err, results) {
+      if (err) return cb(err);
+      cb(null, cfnEvent);
+    }
+  );
 }
 
 const checkLoadBalancer = (loadBalancer) => {
+  console.log(`CALLING checkLoadBalancer with ${loadBalancer}`);
   elb.describeInstanceHealth({ LoadBalancerName: loadBalancer }, function(err, data){
-    if (err) callback(err);
+    if (err) return false;
 
-    callback(null, data.InstanceStates.map(instance => instance.State == 'InService').every(elem => elem));
+    return data.InstanceStates.map(instance => instance.State == 'InService').every(elem => elem);
   });
 }
 
-const mapInstanceNames = (arr) => arr.map(id => instanceMap[id])
+const mapInstanceNames = (arr) => arr.map(id => instanceMap[id]);
