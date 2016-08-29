@@ -185,19 +185,20 @@ const waitForELBs = (cfnEvent, cb) => {
   let elbNames = ecsServiceDefinitions.map(service => service.loadBalancers).reduce((a,b) => a.concat(b));
 
   async.map(elbNames,
-    function(elb, callback) {
-      async.retry({ times: 25, interval: 10000 },
-        function(done, results) {
+    (elb, callback) => {
+      async.retry(
+        { times: 25, interval: 10000 },
+        (done, results) => {
           checkLoadBalancer(done, elb);
         },
-        function(err, result) {
+        (err, result) => {
           if (err) return callback(err);
           console.log(elbNames);
           callback(null);
         }
       )
     },
-    function (err, results) {
+    (err, results) => {
       if (err) return cb(err);
       cb(null, cfnEvent);
     }
