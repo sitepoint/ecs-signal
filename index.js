@@ -158,16 +158,23 @@ const getServiceDetails = (cfnEvent, cb) => {
 
 const deregisterInstances = (cfnEvent, cb) => {
   console.log('CALLING deregisterInstances');
-  mapInstanceNames(instancesOld).map(function(instanceId){
-    forceDeregisterInstance(instanceId, cfnEvent, cb);
-  });
-  cb(null, cfnEvent);
+  async.map(
+    mapInstanceNames(instancesOld),
+    (instanceId, callback) => {
+      forceDeregisterInstance(instanceId, cfnEvent, callback);
+    },
+    (err, results) => {
+      if (err) return cb(err);
+      cb(null, cfnEvent);
+    }
+  );
 }
 
 const forceDeregisterInstance = (instanceId, cfnEvent, cb) => {
   console.log(`CALLING forceDeregisterInstance with ${instanceId}`);
   ecs.deregisterContainerInstance({containerInstance: instanceId, cluster: cfnEvent.cluster, force: true }, function(err, data) {
     if (err) return cb(err);
+    cb(null);
   });
 }
 
