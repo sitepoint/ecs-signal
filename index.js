@@ -188,11 +188,7 @@ const waitForELBs = (cfnEvent, cb) => {
     function(elb, callback) {
       async.retry({ times: 25, interval: 10000 },
         function(done, results) {
-          if (checkLoadBalancer(elb)) {
-            done(null);
-          } else {
-            done('not yet');
-          }
+          checkLoadBalancer(done, elb);
         },
         function(err, result) {
           if (err) return callback(err);
@@ -208,12 +204,16 @@ const waitForELBs = (cfnEvent, cb) => {
   );
 }
 
-const checkLoadBalancer = (loadBalancer) => {
+const checkLoadBalancer = (cb, loadBalancer) => {
   console.log(`CALLING checkLoadBalancer with ${loadBalancer}`);
   elb.describeInstanceHealth({ LoadBalancerName: loadBalancer }, function(err, data){
-    if (err) return false;
+    if (err) return cb('not yet');
 
-    return data.InstanceStates.map(instance => instance.State == 'InService').every(elem => elem);
+    if (data.InstanceStates.map(instance => instance.State == 'InService').every(elem => elem)) {
+      return cb(null);
+    } else {
+      return cb('not yet');
+    }
   });
 }
 
