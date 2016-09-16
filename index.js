@@ -6,9 +6,10 @@ const aws        = require('aws-sdk');
 const parseEvent = require('./lib/parseEvent');
 const selectn    = require('selectn');
 
-const asg = new aws.AutoScaling();
-const ecs = new aws.ECS();
-const elb = new aws.ELB();
+const asg   = new aws.AutoScaling();
+const ecs   = new aws.ECS();
+const elb   = new aws.ELB();
+const elbv2 = new aws.ELBv2();
 
 // instances
 let instancesOld = [];
@@ -145,6 +146,7 @@ const getServiceDetails = (cfnEvent, cb) => {
     data.services.map(function(service) {
       ecsServiceDefinitions.push({
         loadBalancers: service.loadBalancers.map(lb => lb.loadBalancerName),
+        targetGroups: service.loadBalancers.map(lb => lb.targetGroupArn),
         desiredCount: service.desiredCount,
         serviceArn: service.serviceArn,
         serviceStatus: service.status
@@ -189,7 +191,28 @@ const waitForServices = (cfnEvent, cb) => {
 
 const waitForELBs = (cfnEvent, cb) => {
   console.log('CALLING waitForELBs');
-  let elbNames = ecsServiceDefinitions.map(service => service.loadBalancers).reduce((a,b) => a.concat(b));
+  let elbNames = ecsServiceDefinitions.map(service => service.loadBalancers).reduce((a,b) => a.concat(b)).filter(el => el !== undefined);
+  let albNames = ecsServiceDefinitions.map(service => service.targetGroups).reduce((a,b) => a.concat(b)).filter(el => el !== undefined);
+
+  async.map(albNames,
+    (alb, callback) => {
+      async.retry(
+        { times: 25, interval: 10000 },
+        (done, results) => {
+          checkTargetGroup(done, alb);
+        },
+        (err, result) => {
+          if (err) return callback(err);
+          console.log(albNames);
+          callback(null);
+        }
+      )
+    },
+    (err, results) => {
+      if (err) return cb(err);
+      cb(null, cfnEvent);
+    }
+  );
 
   async.map(elbNames,
     (elb, callback) => {
@@ -210,6 +233,19 @@ const waitForELBs = (cfnEvent, cb) => {
       cb(null, cfnEvent);
     }
   );
+}
+
+const checkTargetGroup = (cb, targetGroup) => {
+  console.log(`CALLING checkTargetGroup with ${targetGroup}`);
+  elbv2.describeTargetHealth({ targetGroupName: targetGroup }, function(err, data){
+    if (err) return cb('not yet');
+
+    if (data.TargetHealthDescriptions.map(instance => instance.TargetHealth.State == 'healthy').every(elem => elem)) {
+      return cb(null);
+    } else {
+      return cb('not yet');
+    }
+  });
 }
 
 const checkLoadBalancer = (cb, loadBalancer) => {
