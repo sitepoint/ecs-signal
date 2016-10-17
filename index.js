@@ -35,9 +35,9 @@ exports.handler = ( event, context, callback ) => {
     getContainerInstances,
     getContainerInstanceDetails,
     getServiceDetails,
-    deregisterInstances,
     waitForServices,
-    waitForELBs
+    waitForELBs,
+    waitForALBs
   ], function(err, result) {
     if (err) {
       console.log(err);
@@ -83,7 +83,7 @@ const testForServiceArns = (cfnEvent, cb) => {
 
 const getServiceArns = (cfnEvent, cb) => {
   console.log('CALLING getServiceArns');
-  ecs.listServices({ cluster: cfnEvent.cluster }, function(err, data) {
+  ecs.listServices({ cluster: cfnEvent.clusterNew }, function(err, data) {
     if (err) return cb(err);
 
     ecsServiceArns = data.serviceArns;
@@ -114,7 +114,7 @@ const getASGInstances = (cfnEvent, cb) => {
 
 const getContainerInstances = (cfnEvent, cb) => {
   console.log('CALLING getContainerInstances');
-  ecs.listContainerInstances({ cluster: cfnEvent.cluster}, function(err, data) {
+  ecs.listContainerInstances({ cluster: cfnEvent.clusterNew }, function(err, data) {
     if (err) return cb(err);
 
     instancesECS = data.containerInstanceArns;
@@ -126,7 +126,7 @@ const getContainerInstances = (cfnEvent, cb) => {
 
 const getContainerInstanceDetails = (cfnEvent, cb) => {
   console.log('CALLING getContainerInstanceDetails');
-  ecs.describeContainerInstances({containerInstances: instancesECS, cluster: cfnEvent.cluster}, function(err, data){
+  ecs.describeContainerInstances({ containerInstances: instancesECS, cluster: cfnEvent.clusterNew }, function(err, data){
     if (err) return cb(err);
 
     data.containerInstances.map(function(instance) {
@@ -140,7 +140,7 @@ const getContainerInstanceDetails = (cfnEvent, cb) => {
 
 const getServiceDetails = (cfnEvent, cb) => {
   console.log('CALLING getServiceDetails');
-  ecs.describeServices({ services: ecsServiceArns, cluster: cfnEvent.cluster }, function(err, data) {
+  ecs.describeServices({ services: ecsServiceArns, cluster: cfnEvent.clusterNew  }, function(err, data) {
     if (err) return cb(err);
 
     data.services.map(function(service) {
@@ -158,31 +158,9 @@ const getServiceDetails = (cfnEvent, cb) => {
   });
 }
 
-const deregisterInstances = (cfnEvent, cb) => {
-  console.log('CALLING deregisterInstances');
-  async.map(
-    mapInstanceNames(instancesOld),
-    (instanceId, callback) => {
-      forceDeregisterInstance(instanceId, cfnEvent, callback);
-    },
-    (err, results) => {
-      if (err) return cb(err);
-      cb(null, cfnEvent);
-    }
-  );
-}
-
-const forceDeregisterInstance = (instanceId, cfnEvent, cb) => {
-  console.log(`CALLING forceDeregisterInstance with ${instanceId}`);
-  ecs.deregisterContainerInstance({containerInstance: instanceId, cluster: cfnEvent.cluster, force: true }, function(err, data) {
-    if (err) return cb(err);
-    cb(null);
-  });
-}
-
 const waitForServices = (cfnEvent, cb) => {
   console.log('CALLING waitForServices');
-  ecs.waitFor('servicesStable', {services: ecsServiceArns, cluster: cfnEvent.cluster}, function(err, data){
+  ecs.waitFor('servicesStable', { services: ecsServiceArns, cluster: cfnEvent.clusterNew }, function(err, data){
     if (err) return cb(err);
 
     cb(null, cfnEvent);
@@ -192,27 +170,6 @@ const waitForServices = (cfnEvent, cb) => {
 const waitForELBs = (cfnEvent, cb) => {
   console.log('CALLING waitForELBs');
   let elbNames = ecsServiceDefinitions.map(service => service.loadBalancers).reduce((a,b) => a.concat(b)).filter(el => el !== undefined);
-  let albNames = ecsServiceDefinitions.map(service => service.targetGroups).reduce((a,b) => a.concat(b)).filter(el => el !== undefined);
-
-  async.map(albNames,
-    (alb, callback) => {
-      async.retry(
-        { times: 25, interval: 10000 },
-        (done, results) => {
-          checkTargetGroup(done, alb);
-        },
-        (err, result) => {
-          if (err) return callback(err);
-          console.log(albNames);
-          callback(null);
-        }
-      )
-    },
-    (err, results) => {
-      if (err) return cb(err);
-      cb(null, cfnEvent);
-    }
-  );
 
   async.map(elbNames,
     (elb, callback) => {
@@ -235,14 +192,48 @@ const waitForELBs = (cfnEvent, cb) => {
   );
 }
 
+const waitForALBs = (cfnEvent, cb) => {
+  console.log('CALLING waitForALBs');
+  let albNames = ecsServiceDefinitions.map(service => service.targetGroups).reduce((a,b) => a.concat(b)).filter(el => el !== undefined);
+
+  async.map(albNames,
+    (alb, callback) => {
+      async.retry(
+        { times: 25, interval: 10000 },
+        (done, results) => {
+          checkTargetGroup(done, alb);
+        },
+        (err, result) => {
+          if (err) return callback(err);
+          console.log(albNames);
+          callback(null);
+        }
+      )
+    },
+    (err, results) => {
+      if (err) return cb(err);
+      cb(null, cfnEvent);
+    }
+  );
+}
+
 const checkTargetGroup = (cb, targetGroup) => {
   console.log(`CALLING checkTargetGroup with ${targetGroup}`);
-  elbv2.describeTargetHealth({ targetGroupName: targetGroup }, function(err, data){
-    if (err) return cb('not yet');
+  elbv2.describeTargetHealth({ TargetGroupArn: targetGroup }, function(err, data){
+    if (err) {
+      console.log(err);
+      return cb('not yet');
+    }
 
-    if (data.TargetHealthDescriptions.map(instance => instance.TargetHealth.State == 'healthy').every(elem => elem)) {
+    if (data.TargetHealthDescriptions.
+        filter((instance) => instancesNew.indexOf(instance.Target.Id) !== -1).
+        map(instance => instance.TargetHealth.State == 'healthy').
+        every(elem => elem)) {
+      console.log('healthy as');
       return cb(null);
     } else {
+      console.log(data);
+      console.log(dataTargetHealthDescriptions.filter((instance) => instancesNew.indexOf(instance.Target.Id) !== -1));
       return cb('not yet');
     }
   });
