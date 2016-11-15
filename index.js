@@ -67,7 +67,7 @@ const testForEvent = (event, cfnEvent, cb) => {
 
 const testForOldASG = (cfnEvent, cb) => {
   console.log('CALLING testForOldASG');
-  if (cfnEvent.asgOld === undefined) {
+  if (cfnEvent.asgOld === undefined || cfnEvent.asgOld == cfnEvent.asgNew) {
     return cb('ok');
   }
   cb(null, cfnEvent);
